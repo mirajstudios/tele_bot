@@ -7,7 +7,7 @@ from telegram.ext import (
     filters, ContextTypes
 )
 
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = "8821935984:AAFBGU2Ge3fVa_qyhrySo3eqw7akgS64Ldw"
 
 # Storage
 link_count = defaultdict(int)
