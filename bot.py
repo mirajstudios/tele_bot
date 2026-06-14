@@ -1,3 +1,4 @@
+import os
 import re
 from datetime import timedelta
 from collections import defaultdict
@@ -7,7 +8,10 @@ from telegram.ext import (
     filters, ContextTypes
 )
 
-BOT_TOKEN = "8821935984:AAFBGU2Ge3fVa_qyhrySo3eqw7akgS64Ldw"
+# ── Get token from environment variable ──────────────────────────────────────
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable is not set!")
 
 # Storage
 link_count = defaultdict(int)
@@ -191,7 +195,7 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Failed: {e}")
 
 
-# ── /list, /stats, /help ──────────────────────────────────────────────────────
+# ── /list ─────────────────────────────────────────────────────────────────────
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not senders:
@@ -202,8 +206,16 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📋 Link Senders ({len(senders)} users | {total_links} total):\n\n" + "\n".join(lines)
     )
 
+
+# ── /stats ────────────────────────────────────────────────────────────────────
+
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"📊 Total links shared: *{total_links}*", parse_mode="Markdown")
+    await update.message.reply_text(
+        f"📊 Total links shared: *{total_links}*", parse_mode="Markdown"
+    )
+
+
+# ── /help ─────────────────────────────────────────────────────────────────────
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -231,11 +243,13 @@ async def post_init(application: Application):
         BotCommand("dall", "Delete all tracked messages"),
         BotCommand("help", "Show all commands"),
     ])
+    print("✅ Bot commands registered.")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    print(f"✅ Starting bot...")
     app = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -254,7 +268,7 @@ def main():
 
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message), group=1)
 
-    print("✅ Bot is running...")
+    print("✅ Bot is running and listening...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
