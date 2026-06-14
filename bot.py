@@ -31,18 +31,6 @@ def parse_duration(s):
         pass
     return None
 
-async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    try:
-        member = await context.bot.get_chat_member(
-            update.effective_chat.id,
-            update.effective_user.id
-        )
-        print(f"[DEBUG] @{update.effective_user.username} status: {member.status}")
-        return member.status in ("administrator", "creator")
-    except Exception as e:
-        print(f"[ERROR] is_admin failed: {e}")
-        return False
-
 
 # ── Track every message ──────────────────────────────────────────────────────
 
@@ -107,10 +95,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /dall ─────────────────────────────────────────────────────────────────────
 
 async def dall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Only admins can use this command.")
-        return
-
     try:
         await update.message.delete()
     except Exception:
@@ -141,10 +125,6 @@ async def dall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /ban ──────────────────────────────────────────────────────────────────────
 
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Only admins can use this command.")
-        return
-
     args = context.args
     if len(args) < 2:
         await update.message.reply_text("⚠️ Usage:\n/ban all 3d\n/ban @username 2d")
@@ -182,10 +162,6 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /unban ────────────────────────────────────────────────────────────────────
 
 async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Only admins can use this command.")
-        return
-
     args = context.args
     if not args:
         await update.message.reply_text("⚠️ Usage: /unban @username")
@@ -218,9 +194,6 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /list, /stats, /help ──────────────────────────────────────────────────────
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Only admins can use this command.")
-        return
     if not senders:
         await update.message.reply_text("📭 No link senders yet.")
         return
@@ -230,17 +203,11 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Only admins can use this command.")
-        return
     await update.message.reply_text(f"📊 Total links shared: *{total_links}*", parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Only admins can use this command.")
-        return
     await update.message.reply_text(
-        "🤖 *Link Manager Bot — Admin Commands*\n\n"
+        "🤖 *Link Manager Bot Commands*\n\n"
         "*/list* — Show all link senders\n"
         "*/stats* — Show total link count\n"
         "*/ban all 3d* — Mute everyone on the list\n"
@@ -248,7 +215,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*/unban @user* — Restore messaging rights\n"
         "*/dall* — Delete all tracked messages\n\n"
         "⏱ Duration: `3d` days · `6h` hours · `30m` minutes\n"
-        "📌 Members remove themselves: send a video captioned `ad` or `add`",
+        "📌 To remove yourself: send a video captioned `ad` or `add`",
         parse_mode="Markdown"
     )
 
@@ -259,8 +226,8 @@ async def post_init(application: Application):
     await application.bot.set_my_commands([
         BotCommand("list", "Show all link senders"),
         BotCommand("stats", "Show total link count"),
-        BotCommand("ban", "Mute users - usage: /ban all 3d or /ban @user 2d"),
-        BotCommand("unban", "Restore user messaging - usage: /unban @user"),
+        BotCommand("ban", "Mute users - /ban all 3d or /ban @user 2d"),
+        BotCommand("unban", "Restore user - /unban @user"),
         BotCommand("dall", "Delete all tracked messages"),
         BotCommand("help", "Show all commands"),
     ])
