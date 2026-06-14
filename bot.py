@@ -1,7 +1,7 @@
 import re
 from datetime import timedelta
 from collections import defaultdict
-from telegram import Update, ChatPermissions
+from telegram import Update, ChatPermissions, BotCommand
 from telegram.ext import (
     Application, MessageHandler, CommandHandler,
     filters, ContextTypes
@@ -37,10 +37,10 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
             update.effective_chat.id,
             update.effective_user.id
         )
-        print(f"[DEBUG] {update.effective_user.username} status: {member.status}")
+        print(f"[DEBUG] @{update.effective_user.username} status: {member.status}")
         return member.status in ("administrator", "creator")
     except Exception as e:
-        print(f"[ERROR] is_admin check failed: {e}")
+        print(f"[ERROR] is_admin failed: {e}")
         return False
 
 
@@ -51,7 +51,7 @@ async def track_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user:
         if user.username:
             user_id_map[user.username.lower()] = user.id
-        user_id_map[str(user.id)] = user.id  # also store by ID
+        user_id_map[str(user.id)] = user.id
     msg = update.effective_message
     if msg:
         tracked_messages.append((msg.chat_id, msg.message_id))
@@ -104,7 +104,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tracked_messages.append((sent.chat_id, sent.message_id))
 
 
-# ── /dall ────────────────────────────────────────────────────────────────────
+# ── /dall ─────────────────────────────────────────────────────────────────────
 
 async def dall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -138,7 +138,7 @@ async def dall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tracked_messages.append((confirm.chat_id, confirm.message_id))
 
 
-# ── /ban ─────────────────────────────────────────────────────────────────────
+# ── /ban ──────────────────────────────────────────────────────────────────────
 
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -160,12 +160,9 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     results = []
 
-    targets = {}
-    if target == "all":
-        targets = dict(senders)
-    else:
-        uname = target.lstrip("@").lower()
-        targets = {uname: senders.get(uname, f"@{uname}")}
+    targets = dict(senders) if target == "all" else {
+        target.lstrip("@"): senders.get(target.lstrip("@"), f"@{target.lstrip('@')}")
+    }
 
     for uname, display in targets.items():
         member_id = user_id_map.get(uname.lower())
@@ -182,7 +179,7 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(results) or "No actions taken.")
 
 
-# ── /unban ───────────────────────────────────────────────────────────────────
+# ── /unban ────────────────────────────────────────────────────────────────────
 
 async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -256,10 +253,28 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── Setup bot commands menu ───────────────────────────────────────────────────
+
+async def post_init(application: Application):
+    await application.bot.set_my_commands([
+        BotCommand("list", "Show all link senders"),
+        BotCommand("stats", "Show total link count"),
+        BotCommand("ban", "Mute users - usage: /ban all 3d or /ban @user 2d"),
+        BotCommand("unban", "Restore user messaging - usage: /unban @user"),
+        BotCommand("dall", "Delete all tracked messages"),
+        BotCommand("help", "Show all commands"),
+    ])
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
     app.add_handler(MessageHandler(filters.ALL, track_user), group=0)
 
@@ -273,7 +288,7 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message), group=1)
 
     print("✅ Bot is running...")
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
