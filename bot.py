@@ -13,8 +13,8 @@ BOT_TOKEN = "8821935984:AAFBGU2Ge3fVa_qyhrySo3eqw7akgS64Ldw"
 link_count = defaultdict(int)
 senders = {}
 total_links = 0
-user_id_map = {}        # username -> user_id
-tracked_messages = []   # list of (chat_id, message_id) the bot has seen
+user_id_map = {}
+tracked_messages = []
 
 URL_REGEX = re.compile(r'https?://\S+|www\.\S+')
 
@@ -31,24 +31,33 @@ def parse_duration(s):
         pass
     return None
 
-async def is_admin(update, context):
-    member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
-    return member.status in ("administrator", "creator")
+async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    try:
+        member = await context.bot.get_chat_member(
+            update.effective_chat.id,
+            update.effective_user.id
+        )
+        print(f"[DEBUG] {update.effective_user.username} status: {member.status}")
+        return member.status in ("administrator", "creator")
+    except Exception as e:
+        print(f"[ERROR] is_admin check failed: {e}")
+        return False
 
 
-# ── Track every message ID ──────────────────────────────────────────────────
+# ── Track every message ──────────────────────────────────────────────────────
 
 async def track_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if user and user.username:
-        user_id_map[user.username] = user.id
-    # Track message for /dall
+    if user:
+        if user.username:
+            user_id_map[user.username.lower()] = user.id
+        user_id_map[str(user.id)] = user.id  # also store by ID
     msg = update.effective_message
     if msg:
         tracked_messages.append((msg.chat_id, msg.message_id))
 
 
-# ── Link handler ────────────────────────────────────────────────────────────
+# ── Link handler ─────────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global total_links
@@ -92,36 +101,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + f"\n\n📊 Total links: {total_links}"
         )
     )
-    # Track the bot's own repost too
     tracked_messages.append((sent.chat_id, sent.message_id))
 
 
-# ── /dall ───────────────────────────────────────────────────────────────────
+# ── /dall ────────────────────────────────────────────────────────────────────
 
 async def dall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Admin only: /dall
-    Deletes all messages the bot has tracked since it started.
-    Note: Telegram does not allow deleting messages older than 48h
-    unless the bot is admin with delete permission.
-    """
     if not await is_admin(update, context):
         await update.message.reply_text("❌ Only admins can use this command.")
         return
 
-    if not tracked_messages:
-        await update.message.reply_text("📭 No messages to delete.")
-        return
-
-    deleted = 0
-    failed = 0
-    chat_id = update.effective_chat.id
-
-    # Also delete the /dall command message itself
     try:
         await update.message.delete()
     except Exception:
         pass
+
+    deleted = 0
+    failed = 0
+    chat_id = update.effective_chat.id
 
     for c_id, m_id in list(tracked_messages):
         if c_id != chat_id:
@@ -136,12 +133,12 @@ async def dall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     confirm = await context.bot.send_message(
         chat_id=chat_id,
-        text=f"🗑️ Deleted {deleted} messages. ({failed} couldn't be deleted — too old or already gone)"
+        text=f"🗑️ Deleted {deleted} messages. ({failed} were too old or already gone)"
     )
     tracked_messages.append((confirm.chat_id, confirm.message_id))
 
 
-# ── /ban ────────────────────────────────────────────────────────────────────
+# ── /ban ─────────────────────────────────────────────────────────────────────
 
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -165,13 +162,13 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     targets = {}
     if target == "all":
-        targets = {u: senders[u] for u in senders}
+        targets = dict(senders)
     else:
-        uname = target.lstrip("@")
+        uname = target.lstrip("@").lower()
         targets = {uname: senders.get(uname, f"@{uname}")}
 
     for uname, display in targets.items():
-        member_id = user_id_map.get(uname)
+        member_id = user_id_map.get(uname.lower())
         if not member_id:
             results.append(f"⚠️ {display} — ID unknown, skipped")
             continue
@@ -185,7 +182,7 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(results) or "No actions taken.")
 
 
-# ── /unban ──────────────────────────────────────────────────────────────────
+# ── /unban ───────────────────────────────────────────────────────────────────
 
 async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -197,7 +194,7 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Usage: /unban @username")
         return
 
-    uname = args[0].lstrip("@")
+    uname = args[0].lstrip("@").lower()
     member_id = user_id_map.get(uname)
     display = senders.get(uname, f"@{uname}")
 
@@ -221,7 +218,7 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Failed: {e}")
 
 
-# ── /list, /stats, /help ────────────────────────────────────────────────────
+# ── /list, /stats, /help ──────────────────────────────────────────────────────
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -252,14 +249,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*/ban all 3d* — Mute everyone on the list\n"
         "*/ban @user 2d* — Mute a specific user\n"
         "*/unban @user* — Restore messaging rights\n"
-        "*/dall* — Delete all tracked messages in the group\n\n"
+        "*/dall* — Delete all tracked messages\n\n"
         "⏱ Duration: `3d` days · `6h` hours · `30m` minutes\n"
-        "📌 Members remove themselves: send a video with caption `ad` or `add`",
+        "📌 Members remove themselves: send a video captioned `ad` or `add`",
         parse_mode="Markdown"
     )
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
