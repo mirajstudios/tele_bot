@@ -1,38 +1,57 @@
 import re
+from datetime import timedelta
 from collections import defaultdict
-from telegram import Update
+from telegram import Update, ChatPermissions
 from telegram.ext import (
     Application, MessageHandler, CommandHandler,
     filters, ContextTypes
 )
 
-# =============================================
-# CONFIGURATION
-# =============================================
-BOT_TOKEN = "8821935984:AAFBGU2Ge3fVa_qyhrySo3eqw7akgS64Ldw"
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
 
-# =============================================
-# STORAGE (in-memory, resets on bot restart)
-# =============================================
-link_count = defaultdict(int)   # username -> number of links sent
-senders = {}                     # username -> display name
-total_links = 0                  # total links across all users
+# Storage
+link_count = defaultdict(int)
+senders = {}
+total_links = 0
+user_id_map = {}        # username -> user_id
+tracked_messages = []   # list of (chat_id, message_id) the bot has seen
 
 URL_REGEX = re.compile(r'https?://\S+|www\.\S+')
 
 def extract_links(text):
-    """Extract all URLs from a text string."""
     return URL_REGEX.findall(text or "")
 
+def parse_duration(s):
+    s = s.lower().strip()
+    try:
+        if s.endswith("d"): return timedelta(days=int(s[:-1]))
+        if s.endswith("h"): return timedelta(hours=int(s[:-1]))
+        if s.endswith("m"): return timedelta(minutes=int(s[:-1]))
+    except ValueError:
+        pass
+    return None
 
-# =============================================
-# HANDLERS
-# =============================================
+async def is_admin(update, context):
+    member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
+    return member.status in ("administrator", "creator")
+
+
+# ── Track every message ID ──────────────────────────────────────────────────
+
+async def track_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user and user.username:
+        user_id_map[user.username] = user.id
+    # Track message for /dall
+    msg = update.effective_message
+    if msg:
+        tracked_messages.append((msg.chat_id, msg.message_id))
+
+
+# ── Link handler ────────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle all non-command messages in the group."""
     global total_links
-
     msg = update.message
     if not msg:
         return
@@ -42,106 +61,222 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     display = f"@{username}" if user.username else user.full_name
     text = msg.text or msg.caption or ""
 
-    # --- Handle video with "ad" or "add" caption ---
     if msg.video:
-        lower = text.lower().strip()
-        if lower in ("ad", "add"):
+        if text.lower().strip() in ("ad", "add"):
             if username in senders:
                 del senders[username]
                 link_count.pop(username, None)
-                await msg.reply_text(f"✅ {display} has been removed from the sender list.")
+                await msg.reply_text(f"✅ {display} removed from the sender list.")
             else:
                 await msg.reply_text(f"ℹ️ {display} was not in the sender list.")
         return
 
-    # --- Handle messages with links ---
     links = extract_links(text)
     if not links:
         return
 
-    # Delete the original message
     try:
         await msg.delete()
-    except Exception as e:
-        print(f"[WARN] Could not delete message: {e}")
-        # Bot may not have delete permissions
+    except Exception:
+        pass
 
-    # Update stats
     total_links += len(links)
     link_count[username] += len(links)
     senders[username] = display
 
-    # Repost the link(s) with attribution
-    link_text = "\n".join(links)
-    await context.bot.send_message(
+    sent = await context.bot.send_message(
         chat_id=msg.chat_id,
         text=(
             f"🔗 Link shared by {display}:\n"
-            f"{link_text}\n\n"
-            f"📊 Total links in this group: {total_links}"
-        ),
-        disable_web_page_preview=False
+            + "\n".join(links)
+            + f"\n\n📊 Total links: {total_links}"
+        )
     )
+    # Track the bot's own repost too
+    tracked_messages.append((sent.chat_id, sent.message_id))
 
 
-async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/list — Show all users who have sent links and their counts."""
-    if not senders:
-        await update.message.reply_text("📭 No one has sent a link yet.")
+# ── /dall ───────────────────────────────────────────────────────────────────
+
+async def dall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin only: /dall
+    Deletes all messages the bot has tracked since it started.
+    Note: Telegram does not allow deleting messages older than 48h
+    unless the bot is admin with delete permission.
+    """
+    if not await is_admin(update, context):
+        await update.message.reply_text("❌ Only admins can use this command.")
         return
 
-    lines = [
-        f"{name} — {link_count[u]} link(s)"
-        for u, name in senders.items()
-    ]
-    text = (
-        f"📋 Link Senders ({len(senders)} users | {total_links} total links):\n\n"
-        + "\n".join(lines)
-    )
-    await update.message.reply_text(text)
+    if not tracked_messages:
+        await update.message.reply_text("📭 No messages to delete.")
+        return
 
+    deleted = 0
+    failed = 0
+    chat_id = update.effective_chat.id
+
+    # Also delete the /dall command message itself
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    for c_id, m_id in list(tracked_messages):
+        if c_id != chat_id:
+            continue
+        try:
+            await context.bot.delete_message(chat_id=c_id, message_id=m_id)
+            deleted += 1
+        except Exception:
+            failed += 1
+
+    tracked_messages.clear()
+
+    confirm = await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🗑️ Deleted {deleted} messages. ({failed} couldn't be deleted — too old or already gone)"
+    )
+    tracked_messages.append((confirm.chat_id, confirm.message_id))
+
+
+# ── /ban ────────────────────────────────────────────────────────────────────
+
+async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update, context):
+        await update.message.reply_text("❌ Only admins can use this command.")
+        return
+
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("⚠️ Usage:\n/ban all 3d\n/ban @username 2d")
+        return
+
+    target = args[0].lower()
+    duration = parse_duration(args[1])
+    if not duration:
+        await update.message.reply_text("⚠️ Invalid duration. Use: 3d, 6h, or 30m")
+        return
+
+    muted = ChatPermissions(can_send_messages=False)
+    chat_id = update.effective_chat.id
+    results = []
+
+    targets = {}
+    if target == "all":
+        targets = {u: senders[u] for u in senders}
+    else:
+        uname = target.lstrip("@")
+        targets = {uname: senders.get(uname, f"@{uname}")}
+
+    for uname, display in targets.items():
+        member_id = user_id_map.get(uname)
+        if not member_id:
+            results.append(f"⚠️ {display} — ID unknown, skipped")
+            continue
+        try:
+            until = update.message.date + duration
+            await context.bot.restrict_chat_member(chat_id, member_id, muted, until_date=until)
+            results.append(f"🔇 {display} muted for {args[1]}")
+        except Exception as e:
+            results.append(f"⚠️ {display} — failed: {e}")
+
+    await update.message.reply_text("\n".join(results) or "No actions taken.")
+
+
+# ── /unban ──────────────────────────────────────────────────────────────────
+
+async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update, context):
+        await update.message.reply_text("❌ Only admins can use this command.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("⚠️ Usage: /unban @username")
+        return
+
+    uname = args[0].lstrip("@")
+    member_id = user_id_map.get(uname)
+    display = senders.get(uname, f"@{uname}")
+
+    if not member_id:
+        await update.message.reply_text(f"⚠️ Can't find {display}.")
+        return
+
+    try:
+        await context.bot.restrict_chat_member(
+            chat_id=update.effective_chat.id,
+            user_id=member_id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_polls=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True,
+            )
+        )
+        await update.message.reply_text(f"✅ {display} can send messages again.")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Failed: {e}")
+
+
+# ── /list, /stats, /help ────────────────────────────────────────────────────
+
+async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update, context):
+        await update.message.reply_text("❌ Only admins can use this command.")
+        return
+    if not senders:
+        await update.message.reply_text("📭 No link senders yet.")
+        return
+    lines = [f"{name} — {link_count[u]} link(s)" for u, name in senders.items()]
+    await update.message.reply_text(
+        f"📋 Link Senders ({len(senders)} users | {total_links} total):\n\n" + "\n".join(lines)
+    )
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/stats — Show total link count."""
-    await update.message.reply_text(
-        f"📊 Total links shared in this group: *{total_links}*",
-        parse_mode="Markdown"
-    )
-
+    if not await is_admin(update, context):
+        await update.message.reply_text("❌ Only admins can use this command.")
+        return
+    await update.message.reply_text(f"📊 Total links shared: *{total_links}*", parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/help — Show usage instructions."""
+    if not await is_admin(update, context):
+        await update.message.reply_text("❌ Only admins can use this command.")
+        return
     await update.message.reply_text(
-        "🤖 *Link Manager Bot*\n\n"
-        "📌 *How it works:*\n"
-        "• Send a link → Bot deletes it and reposts it with your name\n"
-        "• Send a video with caption `ad` or `add` → Bot removes you from the list\n\n"
-        "📌 *Commands:*\n"
-        "/list — Show all link senders\n"
-        "/stats — Show total link count\n"
-        "/help — Show this message",
+        "🤖 *Link Manager Bot — Admin Commands*\n\n"
+        "*/list* — Show all link senders\n"
+        "*/stats* — Show total link count\n"
+        "*/ban all 3d* — Mute everyone on the list\n"
+        "*/ban @user 2d* — Mute a specific user\n"
+        "*/unban @user* — Restore messaging rights\n"
+        "*/dall* — Delete all tracked messages in the group\n\n"
+        "⏱ Duration: `3d` days · `6h` hours · `30m` minutes\n"
+        "📌 Members remove themselves: send a video with caption `ad` or `add`",
         parse_mode="Markdown"
     )
 
 
-# =============================================
-# MAIN
-# =============================================
+# ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Command handlers
+    app.add_handler(MessageHandler(filters.ALL, track_user), group=0)
+
     app.add_handler(CommandHandler("list", list_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("ban", ban_command))
+    app.add_handler(CommandHandler("unban", unban_command))
+    app.add_handler(CommandHandler("dall", dall_command))
     app.add_handler(CommandHandler("help", help_command))
 
-    # Message handler (all non-command messages)
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message), group=1)
 
     print("✅ Bot is running...")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
